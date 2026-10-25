@@ -2,6 +2,12 @@
 { pkgs, config, lib, ... }:
 let
   cfg = config.services.strata;
+  engine = cfg.package.passthru.engine or null;
+  hip = !cfg.mockEngine && (engine.backend or "cuda") == "hip";
+  defaultDataDir = "/var/lib/strata";
+  # A data dir elsewhere (another disk) gets a static owner: DynamicUser manages only its own StateDirectory.
+  staticUser = cfg.dataDir != defaultDataDir;
+  gpuList = lib.concatStringsSep "," cfg.gpus;
 in
 {
   options.services.strata = {
@@ -70,7 +76,7 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = ''
-        CUDA device numbers (as nvidia-smi numbers them, PCI order).
+        GPU device numbers: CUDA's as nvidia-smi numbers them (PCI order), or HIP's for the AMD engine.
         Empty: the engine picks the card with the most VRAM.
         Several: layer split across the cards.
       '';
@@ -118,6 +124,17 @@ in
       default = true;
       description = "Download/prepare missing model files before starting (resumable, skipped when done).";
     };
+
+    dataDir = lib.mkOption {
+      type = lib.types.path;
+      default = defaultDataDir;
+      example = "/data/scratch/strata";
+      description = ''
+        Where the weights, pack, MTP draft layer and config.json live (~70 GB).
+        The default is the service's StateDirectory under a DynamicUser; any other path
+        runs the service as the static `strata` user and requires its mount.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -156,15 +173,22 @@ in
       after = [ "network-online.target" ];
       path = [ cfg.package ];
 
-      environment = lib.optionalAttrs (cfg.gpus != [ ]) {
-        CUDA_DEVICE_ORDER = "PCI_BUS_ID";
-        CUDA_VISIBLE_DEVICES = lib.concatStringsSep "," cfg.gpus;
-      };
+      environment = lib.optionalAttrs (cfg.gpus != [ ]) (
+        if hip then
+          { HIP_VISIBLE_DEVICES = gpuList; }
+        else
+          {
+            CUDA_DEVICE_ORDER = "PCI_BUS_ID";
+            CUDA_VISIBLE_DEVICES = gpuList;
+          }
+      );
+
+      unitConfig.RequiresMountsFor = lib.mkIf staticUser [ cfg.dataDir ];
 
       preStart = lib.mkIf (cfg.prefetchOnStart && !cfg.mockEngine) (toString (
         pkgs.writeShellScript "strata-prestart" (''
           set -euo pipefail
-          state="$STATE_DIRECTORY"
+          state=${lib.escapeShellArg cfg.dataDir}
           exec ${cfg.package}/bin/strata-prefetch \
             --family ${lib.escapeShellArg cfg.family} \
             --model ${lib.escapeShellArg cfg.model} \
@@ -176,8 +200,11 @@ in
             --hf-token-file "/run/credentials/strata.service/hf-token" \
         '' + ''
             --emit-config "$state/config.json" \
-            --engine ${lib.escapeShellArg (toString cfg.package.passthru.engine)}/bin/strata \
+            --engine ${lib.escapeShellArg (toString engine)}/bin/strata \
             --host ${lib.escapeShellArg cfg.host} \
+        '' + lib.optionalString hip ''
+            --backend hip \
+            --engine-env STRATA_HIPBLASLT_TUNING=${engine}/${engine.hipblasltTuning} \
         '' + lib.optionalString (cfg.apiKeyFile != null) ''
             --api-key-file "/run/credentials/strata.service/api-key" \
         '' + lib.optionalString (cfg.gpus != [ ]) ''
@@ -192,14 +219,11 @@ in
 
       serviceConfig = {
         Type = "simple";
-        DynamicUser = true;
-        StateDirectory = "strata";
-        StateDirectoryMode = "0750";
         # First start: preStart downloads ~70 GB and builds the pack - the default
         # 90 s TimeoutStartSec kills it mid-download (the service is resumable, but
         # converge it in one pass). Applies to the start, incl. ExecStartPre.
         TimeoutStartSec = "0";
-        WorkingDirectory = "%S/strata";
+        WorkingDirectory = cfg.dataDir;
         UMask = "0077";
         Restart = "on-failure";
         RestartSec = 10;
@@ -212,7 +236,7 @@ in
             "${cfg.package}/bin/strata-serve --engine mock --port ${toString cfg.port} " +
             "--host ${lib.escapeShellArg cfg.host}"
           else
-            "${cfg.package}/bin/strata-serve --engine strata --config %S/strata/config.json " +
+            "${cfg.package}/bin/strata-serve --engine strata --config ${cfg.dataDir}/config.json " +
             "--port ${toString cfg.port}";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
@@ -224,8 +248,34 @@ in
         RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
         LockPersonality = true;
         MemoryDenyWriteExecute = false;
+      }
+      // (if staticUser then {
+        User = "strata";
+        Group = "strata";
+        ReadWritePaths = [ cfg.dataDir ];
+      } else {
+        DynamicUser = true;
+        StateDirectory = "strata";
+        StateDirectoryMode = "0750";
+      })
+      // lib.optionalAttrs hip {
+        # /dev/kfd and /dev/dri/renderD*
+        SupplementaryGroups = [ "render" "video" ];
+        # ROCm page-locks the host expert arena
+        LimitMEMLOCK = "infinity";
       };
     };
+
+    users = lib.mkIf staticUser {
+      users.strata = {
+        isSystemUser = true;
+        group = "strata";
+        home = cfg.dataDir;
+      };
+      groups.strata = { };
+    };
+
+    systemd.tmpfiles.rules = lib.mkIf staticUser [ "d ${cfg.dataDir} 0750 strata strata - -" ];
 
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
   };
