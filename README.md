@@ -66,7 +66,8 @@ That is normal. API: `http://127.0.0.1:8080/v1/chat/completions` (OpenAI) and
 | `model` | `IQ2_XS` | `Q2_0` / `IQ2_XS` / `IQ3_XXS` / `IQ3_S` (qwen only) / `IQ1_M` (coder only). |
 | `context` | `32768` | 8192-1048576 tokens. Past 262144 strata-prefetch adds yarn rope scaling (experimental upstream). |
 | `host` / `port` | `127.0.0.1` / `8080` | Listen address. |
-| `apiKeyFile` | `null` | Path to a file with the API key (systemd credential). Required when `host` is not loopback. |
+| `apiKeyFile` | `null` | Path to a file with the API key (systemd credential). Required when `host` is not loopback, unless `allowUnauthenticated`. |
+| `allowUnauthenticated` | `false` | Serve beyond loopback without a key, when the firewall limits who reaches the port; every endpoint is then open to them. |
 | `hfTokenFile` | `null` | Hugging Face token file, only for gated repos. |
 | `openFirewall` | `false` | Open the TCP port in the firewall. |
 | `gpus` | `[ ]` | CUDA (with `strata-hip`: HIP) device indices; several = layer split. Empty: the card with the most VRAM. |

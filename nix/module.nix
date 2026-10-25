@@ -61,6 +61,15 @@ in
       description = "File holding the API key (read through a systemd credential, never in the unit).";
     };
 
+    allowUnauthenticated = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Serve beyond loopback without an API key, for a host whose firewall limits who reaches the port.
+        Anyone who reaches it can use every endpoint, including unloading the model and changing its settings.
+      '';
+    };
+
     hfTokenFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -152,8 +161,9 @@ in
         message = "services.strata: the coder family ships IQ1_M only; pick model = IQ1_M.";
       }
       {
-        assertion = cfg.host == "127.0.0.1" || cfg.host == "localhost" || cfg.apiKeyFile != null;
-        message = "services.strata: exposing the API beyond loopback requires apiKeyFile.";
+        assertion = cfg.host == "127.0.0.1" || cfg.host == "localhost" || cfg.apiKeyFile != null
+          || cfg.allowUnauthenticated;
+        message = "services.strata: exposing the API beyond loopback requires apiKeyFile (or allowUnauthenticated).";
       }
       {
         assertion = !cfg.mockEngine || !cfg.prefetchOnStart;
