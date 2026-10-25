@@ -75,6 +75,8 @@ That is normal. API: `http://127.0.0.1:8080/v1/chat/completions` (OpenAI) and
 | `sampling` | `{ }` | Sampling defaults (temperature, top_p, top_k, ...). |
 | `mcpServers` | `{ }` | MCP servers for the web chat (Claude Desktop format; they run with the service's rights). |
 | `extraEngineArgs` | `[ ]` | Extra engine arguments, e.g. `[ "--kv" "q4_0" ]`. |
+| `vision` | `false` | Read images: downloads the family's image encoder (mmproj, ~0.9 GB) and runs `strata-vision` on the CPU, with either engine. |
+| `visionTokens` | `300` | The most image tokens a picture becomes (upstream setup's CPU default). |
 | `mockEngine` | `false` | Scripted mock instead of the model (tests; no GPU, no download). |
 | `dataDir` | `/var/lib/strata` | Weights, pack, MTP layer and `config.json`. Another path runs the service as the static `strata` user and requires its mount. |
 
@@ -101,6 +103,9 @@ services.strata = {
   (`strata-engine.override { cudaArch = "120"; }` for an RTX 50 card; default `89` = RTX 40).
 - `strata-hip` and `strata-engine-hip`, the same with the HIP engine for AMD cards
   (`strata-engine-hip.override { hipArch = "gfx1201"; }` for RDNA4; default `gfx1100`).
+- `strata-vision`, the image encoder (llama.cpp mtmd) built for the CPU from Strata's
+  `tools/vision` with upstream's portable AVX2 flags; `strata` and `strata-hip` carry it as
+  `passthru.vision` for the `vision` option.
 - The model weights are **not** packaged: they are downloaded at runtime into the
   service's state directory (the nix store would not survive a 70 GB model well).
 

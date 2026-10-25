@@ -8,7 +8,8 @@ Steps (each skipped when already done):
   1. download shard 1 + the PLE shard from Hugging Face (resumable, size-verified)
   2. build the pack with upstream tools (iq_pack.py: tensors + tokenizer)
   3. fetch and pack the MTP draft layer (~5 GB, from the original Qwen checkpoint)
-  4. write prepared.json and, with --emit-config, the engine run config for serve/server.py
+  4. with --vision-exe, download the family's image encoder (mmproj, ~0.9 GB)
+  5. write prepared.json and, with --emit-config, the engine run config for serve/server.py
 
 No model weights are installed by nix: they live in --data-dir.  A fully prepared
 data dir needs no network (the .done marks short-circuit every download).
@@ -43,6 +44,7 @@ FAMILIES = {
         "tag": "",
         "name": "qwen3.8-flash-next",
         "profile": "expert-profile.bin",
+        "mmproj": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     },
     "swift": {
         "base": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/",
@@ -50,6 +52,7 @@ FAMILIES = {
         "tag": "swift-",
         "name": "swift-1.5",
         "profile": "expert-profile.bin",
+        "mmproj": "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
     },
     "abliterated": {
         "base": "https://huggingface.co/SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF/resolve/main/{q}/",
@@ -57,6 +60,7 @@ FAMILIES = {
         "tag": "abliterated-",
         "name": "swift-1.5-abliterated",
         "profile": "expert-profile.bin",
+        "mmproj": "https://huggingface.co/SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF/resolve/main/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     },
     "coder": {
         "base": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/main/{q}/",
@@ -64,6 +68,7 @@ FAMILIES = {
         "tag": "coder-",
         "name": "qwen3.8-flash-next-coder",
         "profile": "expert-profile-coder.bin",
+        "mmproj": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF/resolve/main/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
     },
 }
 
@@ -217,6 +222,9 @@ def main() -> int:
     ap.add_argument("--sampling-json")
     ap.add_argument("--mcp-json")
     ap.add_argument("--extra-arg", action="append", default=[])
+    ap.add_argument("--vision-exe", help="strata-vision: read images with the family's encoder on the CPU")
+    ap.add_argument("--vision-tokens", type=int, default=300,
+                    help="the most image tokens a picture becomes (setup's CPU default: 300)")
     a = ap.parse_args()
 
     fam, quant = FAMILIES[a.family], QUANTS[a.model]
@@ -230,6 +238,7 @@ def main() -> int:
     mtp = data / "mtp"
     rt = mtp / "rt"
 
+    token = Path(a.hf_token_file).read_text(encoding="utf-8").strip() if a.hf_token_file else None
     if a.gguf_dir:
         gdir = Path(a.gguf_dir)
         shards = [gdir / fam["file"].format(q=a.model, i=i) for i in (1, 2)]
@@ -237,9 +246,6 @@ def main() -> int:
     else:
         base = fam["base"].format(q=a.model)
         shards = [models / fam["file"].format(q=a.model, i=i) for i in (1, 2)]
-        token = None
-        if a.hf_token_file:
-            token = Path(a.hf_token_file).read_text(encoding="utf-8").strip()
         for i, (s, label) in enumerate(zip(shards, (f"{a.family}/{a.model} shard 1", f"{a.family}/{a.model} shard 2"))):
             download(base + s.name, s, label, token=token)
 
@@ -283,6 +289,10 @@ def main() -> int:
             shutil.copyfile(SHARE / "data" / "draft_vocab.bin", rt / "draft_vocab.bin")
         ok(f"MTP already prepared: {rt}")
 
+    mmproj = models / fam["mmproj"].rsplit("/", 1)[1]
+    if a.vision_exe:
+        download(fam["mmproj"], mmproj, "vision encoder", token=token)
+
     args = [
         "--pack", str(pack),
         "--native", str(shard1),
@@ -304,6 +314,8 @@ def main() -> int:
         # factor = final / trained, like upstream setup does.
         # An explicit --rope-scaling among the extra args takes over.
         args += ["--rope-scaling", "yarn", "--rope-scale", f"{a.context / 262144:g}"]
+    if a.vision_exe:
+        args += ["--vision"]
     args += a.extra_arg
 
     prepared = {"args": args, "tokenizer": str(pack / "tokenizer"), "model_name": fam["name"],
@@ -331,6 +343,9 @@ def main() -> int:
             cfg["sampling"] = json.loads(Path(a.sampling_json).read_text(encoding="utf-8"))
         if a.mcp_json:
             cfg["mcp_servers"] = json.loads(Path(a.mcp_json).read_text(encoding="utf-8"))
+        if a.vision_exe:
+            cfg["vision"] = {"exe": a.vision_exe, "mmproj": str(mmproj), "model": str(shard1), "gpu": False,
+                             "max_tokens": a.vision_tokens}
         out = Path(a.emit_config)
         out.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
         if a.api_key_file:

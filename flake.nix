@@ -47,6 +47,7 @@
       overlays.default = final: prev: {
         strata-engine = strataPkgs.strata-engine;
         strata-engine-hip = strataPkgs.strata-engine-hip;
+        strata-vision = strataPkgs.strata-vision;
         strata-serve = strataPkgs.strata-serve;
         strata = strataPkgs.strata;
         strata-hip = strataPkgs.strata-hip;
@@ -61,11 +62,18 @@
 
         strata-engine-hip = strata-engine.override { backend = "hip"; };
 
+        strata-vision = pkgs.callPackage ./pkgs/vision.nix {
+          inherit version pinChecked;
+          src = inputs.strata;
+          llamaSrc = llama-pinned;
+        };
+
         strata-serve = pkgs.callPackage ./pkgs/serve.nix {
           inherit version pinChecked;
           strataSrc = inputs.strata;
           llamaSrc = llama-pinned;
           engine = strata-engine;
+          vision = strata-vision;
         };
 
         strata-serve-hip = strata-serve.override { engine = strata-engine-hip; };

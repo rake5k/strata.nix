@@ -122,6 +122,21 @@ in
       description = "Extra arguments appended to the engine command line (e.g. --kv q4_0).";
     };
 
+    vision = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Read images: downloads the family's image encoder (mmproj, ~0.9 GB) and runs it on the CPU
+        with the package's `strata-vision`, for every backend.
+      '';
+    };
+
+    visionTokens = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 300;
+      description = "The most image tokens a picture becomes; more reads finer detail and takes longer to encode.";
+    };
+
     mockEngine = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -168,6 +183,10 @@ in
       {
         assertion = !cfg.mockEngine || !cfg.prefetchOnStart;
         message = "services.strata: mockEngine requires prefetchOnStart = false.";
+      }
+      {
+        assertion = !cfg.vision || cfg.package ? passthru.vision;
+        message = "services.strata: vision requires a package that carries strata-vision under passthru.vision.";
       }
       {
         assertion = cfg.mockEngine || (cfg.package ? passthru.engine);
@@ -221,6 +240,9 @@ in
             --gpu ${lib.escapeShellArg (lib.concatStringsSep "," cfg.gpus)} \
         '' + lib.optionalString (cfg.sampling != { }) ''
             --sampling-json ${pkgs.writeText "strata-sampling.json" (builtins.toJSON cfg.sampling)} \
+        '' + lib.optionalString cfg.vision ''
+            --vision-exe ${lib.getExe cfg.package.passthru.vision} \
+            --vision-tokens ${toString cfg.visionTokens} \
         '' + lib.optionalString (cfg.mcpServers != { }) ''
             --mcp-json ${pkgs.writeText "strata-mcp.json" (builtins.toJSON cfg.mcpServers)} \
         '' + lib.concatMapStrings (x: ''--extra-arg=${lib.escapeShellArg x} '') cfg.extraEngineArgs
